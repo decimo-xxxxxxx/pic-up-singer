@@ -11,5 +11,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # アプリケーションコードのコピー
 COPY . .
 
+# タイムゾーン設定
+RUN apt-get update && \
+    apt-get install -y tzdata && \
+    ln -sf /usr/share/zoneinfo/Asia/Tokyo /etc/localtime
+
 # 起動コマンド
 CMD ["python", "src/main.py"]

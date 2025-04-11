@@ -1,0 +1,25 @@
+version: "1.0"
+
+jobs:
+  x-list-scheduler:
+    type: scheduled
+    schedule: "0 19 * * *"  # UTC時間で4:00 JST実行
+    container:
+      image: ${IMAGE_URL}
+      command: ["python", "main.py"]
+    resources:
+      cpu: 1000
+      memory: 512
+    env:
+      - name: TZ
+        value: Asia/Tokyo
+      - name: X_API_KEY
+        secret: x-api-key
+      - name: X_API_SECRET
+        secret: x-api-secret
+      - name: X_ACCESS_TOKEN
+        secret: x-access-token
+      - name: X_ACCESS_SECRET
+        secret: x-access-secret
+      - name: BEARER_TOKEN
+        secret: bearer-token
