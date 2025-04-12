@@ -1,18 +1,20 @@
 version: "1.0"
 
-jobs:
-  x-list-scheduler:
+services:
+  x-list-manager:
     type: scheduled
-    schedule: "0 19 * * *"  # UTC時間で4:00 JST実行
+    schedule: "0 19 * * *"  # UTC時間で19時（日本時間4:00）
     container:
       image: ${IMAGE_URL}
       command: ["python", "main.py"]
     resources:
-      cpu: 1000
-      memory: 512
+      cpu: 2000
+      memory: 1024Mi
     env:
       - name: TZ
         value: Asia/Tokyo
+      - name: BEARER_TOKEN
+        secret: bearer-token
       - name: X_API_KEY
         secret: x-api-key
       - name: X_API_SECRET
@@ -21,5 +23,9 @@ jobs:
         secret: x-access-token
       - name: X_ACCESS_SECRET
         secret: x-access-secret
-      - name: BEARER_TOKEN
-        secret: bearer-token
+    healthChecks:
+      http:
+        path: /health
+        port: 8080
+        interval: 30
+        timeout: 10

@@ -1,20 +1,21 @@
-# ベースイメージ
-FROM python:3.11
+FROM python:3.11-slim
 
-# 作業ディレクトリ設定
 WORKDIR /app
 
-# 依存関係のインストール
+# タイムゾーン設定
+ENV TZ=Asia/Tokyo
+RUN apt-get update && \
+    apt-get install -y tzdata && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime
+
+# 依存関係インストール
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# アプリケーションコードのコピー
+# アプリケーションコードコピー
 COPY . .
 
-# タイムゾーン設定
-RUN apt-get update && \
-    apt-get install -y tzdata && \
-    ln -sf /usr/share/zoneinfo/Asia/Tokyo /etc/localtime
+# ヘルスチェック用エンドポイント
+EXPOSE 8080
 
-# 起動コマンド
-CMD ["python", "src/main.py"]
+CMD ["python", "main.py"]
