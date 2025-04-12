@@ -1,10 +1,6 @@
-FROM python:3.12.2
+FROM python:3.11-slim
 
 WORKDIR /app
-
-# タイムゾーン設定
-ENV TZ=Asia/Tokyo
-RUN apt-get update && apt-get install -y tzdata && rm -rf /var/lib/apt/lists/*
 
 # 依存関係インストール
 COPY requirements.txt .
