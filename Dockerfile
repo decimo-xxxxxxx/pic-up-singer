@@ -9,8 +9,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # アプリケーションコードコピー
 COPY . .
 
-# ヘルスチェック用ポート開放
-EXPOSE 8080
-
 # 起動コマンド
 CMD ["python", "core.py"]
