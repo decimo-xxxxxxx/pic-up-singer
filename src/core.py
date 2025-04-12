@@ -1,135 +1,214 @@
-# core.py
 import tweepy
-from dotenv import load_dotenv
 import os
-import sys
 import time
-import json
-from typing import Optional
+import random
+from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
+from typing import List, Dict, Optional, Set
 
-class XCoreClient:
+load_dotenv()
+
+class EnhancedLogger:
     def __init__(self):
-        try:
-            # 環境変数のロードと検証
-            load_dotenv()
-            self._validate_env_vars()
-            
-            # APIクライアントの初期化
-            self.client = tweepy.Client(
-                bearer_token=os.getenv("BEARER_TOKEN"),
-                consumer_key=os.getenv("X_API_KEY"),
-                consumer_secret=os.getenv("X_API_SECRET"),
-                access_token=os.getenv("X_ACCESS_TOKEN"),
-                access_token_secret=os.getenv("X_ACCESS_SECRET")
-            )
-            
-            # 初期接続テスト
-            self._test_connection()
-            
-        except Exception as e:
-            self._handle_initialization_error(e)
-
-    def _validate_env_vars(self):
-        """必須環境変数の検証"""
-        required_vars = [
-            'BEARER_TOKEN',
-            'X_API_KEY',
-            'X_API_SECRET',
-            'X_ACCESS_TOKEN',
-            'X_ACCESS_SECRET'
-        ]
-        missing = [var for var in required_vars if not os.getenv(var)]
-        if missing:
-            raise ValueError(f"Missing environment variables: {', '.join(missing)}")
-
-    def _test_connection(self):
-        """初期接続テスト"""
-        try:
-            self.get_my_profile()
-        except tweepy.TweepyException as e:
-            raise ConnectionError(f"X API connection failed: {str(e)}")
-
-    def _handle_initialization_error(self, error):
-        """初期化エラー処理"""
-        error_info = {
-            "timestamp": datetime.now().isoformat(),
-            "error": str(error),
-            "type": type(error).__name__,
-            "env_loaded": os.getenv("BEARER_TOKEN") is not None
+        self.steps = {
+            'initialize': "APIクライアント初期化",
+            'fetch_followers': "フォロワー取得",
+            'fetch_following': "フォロー中取得",
+            'filter_users': "ユーザーフィルタリング",
+            'list_management': "リスト管理",
+            'add_users': "ユーザー追加"
         }
-        print(json.dumps({"status": "INIT_FAILED", "details": error_info}, indent=2))
-        sys.exit(1)
+        self.start_time = time.time()
+        self.rate_limit_data = {}
 
-    def get_my_profile(self):
-        """プロフィール取得（エラーハンドリング強化版）"""
+    def log(self, stage: str, message: str, level: str = "info"):
+        icons = {"info": "ℹ️", "warning": "⚠️", "error": "❌", "success": "✅"}
+        elapsed = time.time() - self.start_time
+        print(f"[{elapsed:05.1f}s] {icons.get(level, '')} {self.steps[stage]}: {message}")
+
+    def update_rate_limit(self, endpoint: str, headers: Dict):
+        remaining = int(headers.get('x-rate-limit-remaining', 1))
+        reset = int(headers.get('x-rate-limit-reset', time.time() + 900))
+        self.rate_limit_data[endpoint] = {
+            'remaining': remaining,
+            'reset_time': datetime.fromtimestamp(reset, tz=timezone.utc)
+        }
+
+class SmartListManager:
+    def __init__(self):
+        self.logger = EnhancedLogger()
+        self.client = self._initialize_client()
+        self.user_info = self._get_user_info()
+        self.following_ids: Set[str] = set()
+        self.request_interval = 60  # 基本間隔（秒）
+
+    def _initialize_client(self):
+        self.logger.log('initialize', 'クライアントを初期化中...')
+        return tweepy.Client(
+            bearer_token=os.getenv("BEARER_TOKEN"),
+            consumer_key=os.getenv("X_API_KEY"),
+            consumer_secret=os.getenv("X_API_SECRET"),
+            access_token=os.getenv("X_ACCESS_TOKEN"),
+            access_token_secret=os.getenv("X_ACCESS_SECRET"),
+            wait_on_rate_limit=True
+        )
+
+    def _get_user_info(self):
+        response = self.client.get_me(user_fields=["public_metrics"])
+        if not response.data:
+            self.logger.log('initialize', 'ユーザー情報取得失敗', 'error')
+            exit(1)
+            
+        self.logger.log('initialize', f"ユーザー @{response.data.username} で接続成功")
+        return {
+            'id': response.data.id,
+            'followers_count': response.data.public_metrics['followers_count']
+        }
+
+    def _fetch_paginated(self, endpoint, **kwargs):
+        users = []
+        pagination_token = None
+        
+        while True:
+            try:
+                response = endpoint(
+                    id=self.user_info['id'],
+                    pagination_token=pagination_token,
+                    **kwargs
+                )
+                users.extend(response.data)
+                
+                self.logger.update_rate_limit(kwargs['endpoint'], response.response.headers)
+                
+                if 'next_token' not in response.meta:
+                    break
+                    
+                pagination_token = response.meta['next_token']
+                self._safe_sleep('pagination', 2)
+                
+            except tweepy.TweepyException as e:
+                self.logger.log('fetch_followers' if 'followers' in str(endpoint) else 'fetch_following',
+                              f"エラー: {str(e)[:50]}", 'error')
+                break
+        
+        return users
+
+    def _safe_sleep(self, context: str, base_delay: int):
+        jitter = random.uniform(0.5, 1.5)
+        delay = base_delay * jitter
+        self.logger.log(context, f"待機中: {delay:.1f}s")
+        time.sleep(delay)
+
+    def get_non_following_users(self) -> List[tweepy.User]:
+        self.logger.log('fetch_followers', 'フォロワー取得開始')
+        followers = self._fetch_paginated(
+            self.client.get_users_followers,
+            endpoint='/2/users/:id/followers',
+            max_results=1000,
+            user_fields=["description", "public_metrics"]
+        )
+        
+        self.logger.log('fetch_following', 'フォロー中取得開始')
+        following = self._fetch_paginated(
+            self.client.get_users_following,
+            endpoint='/2/users/:id/following',
+            max_results=1000
+        )
+        self.following_ids = {user.id for user in following}
+        
+        non_following = [user for user in followers if user.id not in self.following_ids]
+        self.logger.log('filter_users', f"非フォローユーザー数: {len(non_following)}")
+        return non_following
+
+    def _is_vocalist(self, user: tweepy.User) -> bool:
+        keywords = {"歌い手", "vocal", "cover", "artist", "シンガー", "音楽"}
+        platforms = {"youtube.com", "spotify.com", "soundcloud.com"}
+        desc = (user.description or "").lower()
+        return any(kw in desc for kw in keywords) or any(p in desc for p in platforms)
+
+    def _check_conditions(self, user: tweepy.User) -> bool:
+        metrics = user.public_metrics
+        target_range = (
+            self.user_info['followers_count'] - 500,
+            self.user_info['followers_count'] + 500
+        )
+        
+        # 基本条件
+        if not (target_range[0] <= metrics['followers_count'] <= target_range[1]):
+            return False
+        if metrics['followers_count'] <= metrics['following_count']:
+            return False
+            
+        # アクティビティチェック
+        tweets = self._get_recent_tweets(user.id)
+        if not tweets:
+            return False
+            
+        latest_tweet = max(tweets, key=lambda x: x.created_at)
+        if (datetime.now(timezone.utc) - latest_tweet.created_at) > timedelta(hours=24):
+            return False
+            
+        # エンゲージメント分析
+        total_likes = sum(t.public_metrics['like_count'] for t in tweets)
+        engagement = total_likes / (len(tweets) * metrics['followers_count'])
+        if engagement < 0.01:
+            return False
+            
+        # リツイート率
+        retweets = [t for t in tweets if t.text.startswith("RT @")]
+        if len(retweets)/len(tweets) < 0.3:
+            return False
+            
+        return True
+
+    def _get_recent_tweets(self, user_id: str) -> List[tweepy.Tweet]:
         try:
-            return self.client.get_me()
+            response = self.client.get_users_tweets(
+                id=user_id,
+                max_results=100,
+                exclude=["retweets", "replies"],
+                tweet_fields=["public_metrics", "created_at"]
+            )
+            self._safe_sleep('tweet_fetch', 2)
+            return response.data or []
         except tweepy.TweepyException as e:
-            print(f"プロフィール取得エラー: {str(e)}")
-            return None
+            self.logger.log('filter_users', f"ツイート取得エラー: {str(e)[:50]}", 'error')
+            return []
 
-    def create_list(self, name: str, description: str = "", private: bool = True) -> Optional[Dict]:
-        """リスト作成（リトライ機構付き）"""
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                return self.client.create_list(
-                    name=name,
-                    description=description,
-                    private=private
-                )
-            except tweepy.TooManyRequests as e:
-                wait = self._calculate_wait_time(e, attempt)
-                print(f"レートリミット到達: {wait}秒待機 (試行 {attempt+1}/{max_retries})")
-                time.sleep(wait)
-            except tweepy.TweepyException as e:
-                print(f"リスト作成エラー: {str(e)}")
-                break
-        return None
+    def process_list(self, list_name: str = "歌い手リスト", max_users: int = 50):
+        try:
+            # リスト作成
+            self.logger.log('list_management', 'リスト作成/取得中')
+            list_id = self.client.create_list(
+                name=list_name,
+                description="自動収集歌い手リスト",
+                private=True
+            ).data['id']
+            
+            # ユーザー選定
+            candidates = self.get_non_following_users()
+            eligible = [u for u in candidates if self._is_vocalist(u) and self._check_conditions(u)]
+            
+            # ユーザー追加
+            self.logger.log('add_users', f"追加対象 {len(eligible)} 人中 {max_users} 人を追加")
+            added_count = 0
+            for user in eligible[:max_users]:
+                try:
+                    self.client.add_list_member(
+                        id=list_id,
+                        user_id=user.id
+                    )
+                    added_count += 1
+                    self.logger.log('add_users', f"追加成功: @{user.username}")
+                    self._safe_sleep('add_user', 120)  # 2分間隔
+                except tweepy.TweepyException as e:
+                    self.logger.log('add_users', f"追加失敗: {str(e)[:50]}", 'error')
+            
+            self.logger.log('list_management', f"完了: {added_count} ユーザー追加", 'success')
+            
+        except tweepy.TweepyException as e:
+            self.logger.log('list_management', f"致命的エラー: {str(e)}", 'error')
 
-    def add_to_list(self, list_id: str, user_id: str) -> Optional[Dict]:
-        """リスト追加（リトライ機構付き）"""
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                return self.client.add_list_member(
-                    list_id=list_id,
-                    user_id=user_id
-                )
-            except tweepy.TooManyRequests as e:
-                wait = self._calculate_wait_time(e, attempt)
-                print(f"レートリミット到達: {wait}秒待機 (試行 {attempt+1}/{max_retries})")
-                time.sleep(wait)
-            except tweepy.TweepyException as e:
-                print(f"リスト追加エラー: {str(e)}")
-                break
-        return None
-
-    def _calculate_wait_time(self, error: tweepy.TweepyException, attempt: int) -> float:
-        """待機時間計算（指数バックオフ）"""
-        base_wait = 5.0
-        max_wait = 60.0
-        reset_time = getattr(error.response, 'headers', {}).get('x-rate-limit-reset')
-        
-        if reset_time:
-            return min(float(reset_time) - time.time() + 2.0, max_wait)
-        return min(base_wait * (2 ** attempt), max_wait)
-
-# テスト用エントリーポイント
 if __name__ == "__main__":
-    try:
-        client = XCoreClient()
-        print("初期化成功")
-        
-        # テスト実行
-        profile = client.get_my_profile()
-        if profile:
-            print(f"ユーザー名: {profile.data.name}")
-            
-        test_list = client.create_list("テストリスト")
-        if test_list:
-            print(f"リスト作成成功 ID: {test_list.data.id}")
-            
-    except Exception as e:
-        print(f"致命的なエラー: {str(e)}")
-        sys.exit(1)
+    manager = SmartListManager()
+    manager.process_list(max_users=30)
